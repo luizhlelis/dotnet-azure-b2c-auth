@@ -1,5 +1,3 @@
-using System;
-using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -7,15 +5,14 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.OpenApi.Models;
 using Swashbuckle.AspNetCore.SwaggerGen;
 using Microsoft.AspNetCore.Mvc.ApiExplorer;
 using Microsoft.Extensions.Options;
-using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
-using System.Threading.Tasks;
 using DotnetAzureB2C.Utils;
+using Microsoft.Identity.Web;
+using Microsoft.Identity.Web.UI;
 
 namespace DotnetAzureB2C
 {
@@ -56,75 +53,26 @@ namespace DotnetAzureB2C
                 options.OperationFilter<SwaggerDefaultValues>();
             });
 
-            // Cookie configuration for HTTP to support cookies with SameSite=None
-            services.ConfigureSameSiteNoneCookies();
-
-            // Add authentication services
-            services.AddAuthentication(options => {
-                options.DefaultAuthenticateScheme = CookieAuthenticationDefaults.AuthenticationScheme;
-                options.DefaultSignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;
-                options.DefaultChallengeScheme = CookieAuthenticationDefaults.AuthenticationScheme;
-            })
-            .AddCookie()
-            .AddOpenIdConnect("AzureB2C", options => {
-                options.Authority = $"https://{Configuration["AuthorizationServer:Domain"]}";
-                options.ClientId = Configuration["AuthorizationServer:ClientId"];
-                options.ClientSecret = Configuration["AuthorizationServer:ClientSecret"];
-
-                // Set response type to code
-                options.ResponseType = OpenIdConnectResponseType.Code;
-
-                // Configure the scope
-                options.Scope.Clear();
-                var scopeArray = Configuration["AuthorizationServer:Scopes"].Split(',');
-                foreach (var scope in scopeArray)
-                    options.Scope.Add(scope);
-
-                options.CallbackPath = new PathString("/v1/auth/response-oidc");
-
-                options.ClaimsIssuer = "AzureB2C";
-
-                options.SaveTokens = true;
-
-                options.TokenValidationParameters = new TokenValidationParameters
-                {
-                    NameClaimType = "name"
-                };
-
-
-                options.Events = new OpenIdConnectEvents
-                {
-                    OnRedirectToIdentityProviderForSignOut = (context) =>
-                    {
-                        var logoutUri = $"{options.Authority}/v2/logout?client_id={options.ClientId}";
-
-                        var postLogoutUri = context.Properties.RedirectUri;
-                        if (!string.IsNullOrEmpty(postLogoutUri))
-                        {
-                            if (postLogoutUri.StartsWith("/"))
-                            {
-                                var request = context.Request;
-                                postLogoutUri = request.Scheme + "://" + request.Host + request.PathBase + postLogoutUri;
-                            }
-                            logoutUri += $"&returnTo={ Uri.EscapeDataString(postLogoutUri)}";
-                        }
-
-                        context.Response.Redirect(logoutUri);
-                        context.HandleResponse();
-
-                        return Task.CompletedTask;
-                    },
-
-                    OnAuthorizationCodeReceived = (context) =>
-                    {
-                        Console.WriteLine(context.JwtSecurityToken);
-                        return Task.CompletedTask;
-                    }
-                };
+            services.Configure<CookiePolicyOptions>(options =>
+            {
+                // This lambda determines whether user consent for non-essential cookies is needed for a given request.
+                options.CheckConsentNeeded = context => true;
+                options.MinimumSameSitePolicy = SameSiteMode.Unspecified;
+                // Handling SameSite cookie according to https://docs.microsoft.com/en-us/aspnet/core/security/samesite?view=aspnetcore-3.1
+                options.HandleSameSiteCookieCompatibility();
             });
 
-            // Add framework services.
-            services.AddControllersWithViews();
+            // Configuration to sign-in users with Azure AD B2C
+            services.AddMicrosoftIdentityWebAppAuthentication(Configuration, Constants.AzureAdB2C);
+
+            services.AddControllersWithViews()
+                .AddMicrosoftIdentityUI();
+
+            services.AddRazorPages();
+
+            //Configuring appsettings section AzureAdB2C, into IOptions
+            services.AddOptions();
+            services.Configure<OpenIdConnectOptions>(Configuration.GetSection("AzureAdB2C"));
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
@@ -141,6 +89,10 @@ namespace DotnetAzureB2C
             app.UseRouting();
 
             app.UseHttpsRedirection();
+
+            app.UseStaticFiles();
+
+            app.UseCookiePolicy();
 
             app.UseAuthentication();
 
@@ -164,6 +116,7 @@ namespace DotnetAzureB2C
                 endpoints.MapControllerRoute(
                     name: "default",
                     pattern: "{controller=Home}/{action=Index}/{id?}");
+                endpoints.MapRazorPages();
             });
         }
     }
